@@ -1,0 +1,292 @@
+---
+title: "Exercise from Case Study I"
+author: "Christopher Manzano"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+setwd("../case_study1_exercise/")
+```
+
+
+We are going to determine if a comment is in favor or against of the death penalty
+on Spain. For this purpose we are going to use the twits dataset provided on this
+[case study](http://halweb.uc3m.es/esp/Personal/personas/causin/eng/Bayes.Data.Science/Case1plus.html).
+It contains many tweets regarding this matter.
+
+
+## Dataset
+The dataset contains two features:
+
+|Variable|Description|
+|--|--|
+|Text| The content of the tweet|
+|Category| In FAVOR or AGAINST the death penalty|
+
+```{r}
+tweets <- read.csv("twits.csv", sep = ';')
+str(tweets)
+```
+
+After reading the dataset I encountered a problem. I was not able to read the file with
+the correct encoding. Thus I had to convert the dataset into another one with utf-8 
+encoding. I used libre office calc to do this. The resulting dataset is called ``tweets.csv``
+
+``` {r}
+tweets <- read.csv("tweets.csv")
+str(tweets)
+attach(tweets)
+```
+
+## Feature Engineering
+We are going to use the library ``tm`` to process the  corpus of our data
+```{r}
+library(tm)
+corpus_original <- Corpus(VectorSource(Text))
+corpus <- corpus_original
+```
+
+
+```{r frirstApproach}
+transformation <- function(s)
+{
+  s <- tolower(s)
+  s <- removeNumbers(s)
+  s <- removePunctuation(s)
+  return(s)
+}
+
+corpus <- tm_map(corpus, transformation)
+```
+
+Now we are going to remove some stopwords.
+```{r}
+stopwords("es")[1:10]
+```
+
+```{r}
+transformation2 <- function(s)
+{
+  s <- transformation(s)
+  s <- removeWords(s, stopwords("es")[1:(length(stopwords("es")) - 20)])
+  s <- stripWhitespace(s)
+  return(s)
+}
+corpus <- Corpus(VectorSource(Text))
+corpus <- tm_map(corpus, transformation2)
+corpus_vectorized <- tm_map(corpus, strsplit, " ")
+corpus_vectorized$content[1:5]
+``` 
+
+After seeing this results we luckyly discoverd two things: 
+
+* The function removePunctuation only works with the English punctuation signs. 
+* In contrast with the English language, spanish language have the precence of tildes.
+
+We need to remove also the punctuation signs which do not belong to English but
+do not belong to Spanish. I found out [on this site](https://www.italki.com/article/1311/9-differences-between-spanish-and-english-punctuation)
+that we should remove the ``"¿"``, ``"…"`` and ``"¡"`` signs. 
+
+In addition, we also have to take into account that most of the people tweets not
+taking into account the tildes. Therefore I suppose that there will be examples 
+where the tildes appear, and where they do not. Theferore we are going to remove all
+the tildes.
+
+```{r}
+library(stringr)
+transformation3 <- function(s)
+{
+  s <- transformation2(s)
+  s <- str_remove(s, "¡")
+  s <- str_remove(s, "¿")
+  s <- str_remove(s, "…")
+  s <- str_replace(s, "á", "a")
+  s <- str_replace(s, "é", "e")
+  s <- str_replace(s, "í", "i")
+  s <- str_replace(s, "ó", "o")
+  s <- str_replace(s, "ú", "u")
+  s <- str_replace(s, "Á", "a")
+  s <- str_replace(s, "É", "e")
+  s <- str_replace(s, "Í", "i")
+  s <- str_replace(s, "Ó", "o")
+  s <- str_replace(s, "Ú", "u")
+  return(s)
+}
+
+corpus <- tm_map(corpus_original, transformation3)
+corpus_vectorized <- tm_map(corpus, strsplit, " ")
+corpus_vectorized$content[1:5]
+```
+
+We got some interesting results:
+
+* Also the  ``"“"`` character was not removed.
+* Thre may ve some empty components of the form ``""``.
+* Finally, there are substrings such as ``"?????"`` that for any reason are not being removed.
+
+This makes me think that I will not be able to detect all of these issues. Have I
+covered the substring``"????"`` or ``"“"``? I do not know. Should I cover it? I
+do not know neither... It may not be worth it. Thus, I will not fix the last issue.
+
+```{r}
+transformation4 <- function(s)
+{
+  s <- transformation3(s)
+  s <- str_remove(s, "¿¿¿")
+  s <- str_remove(s, '“')
+  s <- stripWhitespace(s)
+}
+
+corpus <- tm_map(corpus_original, transformation4)
+corpus_vectorized <- tm_map(corpus, strsplit, split=" ")
+corpus_vectorized$content[1:10]
+```
+Finally we seem to make progress
+
+## Data analysis
+```{r}
+corpus <- tm_map(corpus_original, transformation4)
+```
+
+```{r}
+library(wordcloud)
+wordcloud(corpus)
+``` 
+
+We are going to ceck the most frequent words.
+```{r}
+in_favor <- which(Category == "FAVOR")
+against <- which(Category == "AGAINST")
+wordcloud(corpus[in_favor], max.words = 100)
+wordcloud(corpus[against], max.words = 100)
+```
+
+We can see that the words "pena" and "muerte" are common in both cases. They
+will not give us any clue to classify a whether a tweet is against or in favor. 
+Thus we are going to remove these words.
+
+```{r}
+transformation5 <- function(s)
+{
+  s <- transformation4(s)
+  s <- str_remove(s, "pena")
+  s <- str_remove(s, "muerte")
+}
+corpus <- tm_map(corpus_original, transformation5)
+
+in_favor <- which(Category == "FAVOR")
+against <- which(Category == "AGAINST")
+wordcloud(corpus[in_favor], max.words = 100)
+wordcloud(corpus[against], max.words = 100)
+```
+
+To be honest I do not get why the wods muerte and pena still appear. However they
+are not that frequent now. We can say that we removed some noise from our data.
+
+## Classifier
+First of all we need to convert our corpus to a matrix with words as elements.
+```{r}
+data_sparse <- DocumentTermMatrix(corpus)
+inspect(data_sparse)
+```
+ We will use 5 fold cross validation as validation
+strategy.
+```{r}
+set.seed(0)
+folds <- sample(1:5, replace=T, data_sparse$nrow)
+```
+
+We are going to use a naive bayes classifier. And we are going to tune some parameters:
+
+* Number of words to take into account
+* Prior distribution of the data
+
+### Frequent words
+We are not gping to take into account all the words but a subset of the most frequent
+words.
+```{r}
+min_freq <- 10
+words <- findFreqTerms(data_sparse, min_freq)
+words
+```
+
+### Naive Bayes tunning
+
+```{r}
+convert_count <- function(x){
+y <- ifelse(x > 0, 1,0)
+y <- factor(y, levels=c(0,1), labels=c("No", "Yes"))
+y
+}
+```
+We are going to use a gridsearch with cross-validation. In order to speed up things
+we are going to use the libraries foreach and doParallel which will allow us to
+parallelize the execution.
+
+The execution code for the gridsearch is given in the following cells. We had to
+start the search by lookinng values among 0 and 10 for laplace smoothing
+and 1 and 31 in steps of 5 for the frequency. 
+Then we had to search in a more accurate grid a couple of times.
+At the end we got somethig liek this:
+```{r training}
+library(e1071)
+library(doParallel)
+library(foreach)
+min_freq <- seq(0, 15,1)
+laplace_smoothing <- seq(1, 2, 1)
+
+
+ncores <- detectCores()
+cluster <- makeCluster(ncores-3)
+registerDoParallel(cluster)
+
+accuracies <- foreach(freq=min_freq, .combine="cbind") %dopar% {
+  library(foreach)
+  library(tm)
+    Category <- tweets$Category
+    words <- tm::findFreqTerms(data_sparse, freq)
+    data <-  tm::DocumentTermMatrix(corpus, control=list(dictionary=words))
+    data <- apply(data, 2, convert_count) 
+    acc <- foreach::foreach(smoothing=laplace_smoothing, .combine="c") %do% {
+     
+        a <- foreach::foreach(fold=1:5, .combine="c") %do% {
+            model <- e1071::naiveBayes(x=data[folds==fold,],
+                                       y=Category[folds==fold],
+                                       laplace=smoothing)
+            # Accuracy
+            sum(predict(model, data[folds!=fold,]) == Category[folds!=fold])/length(Category[folds!=fold])
+            
+        }
+        mean(a)
+    }
+}
+stopCluster(cluster)
+
+```
+We are going to analyze our results
+```{r}
+library(plot.matrix)
+rownames(accuracies) <- laplace_smoothing
+colnames(accuracies) <- min_freq
+accuracies
+plot(accuracies, xlab="min_freq", ylab="laplace_smoothing")
+```
+
+There is not much difference for the min_frequency around 5.
+Therefore We will choose 2.
+
+## Conclusions
+At the end we got an accuracy of 0.79 which is not bad. I can not wait to see if someone improves this score.
+```{r}
+words <- findFreqTerms(data_sparse, 5)
+data <-  DocumentTermMatrix(corpus, control=list(dictionary=words))
+data <- apply(data, 2, convert_count) 
+model <- naiveBayes(x=data,
+                     y=Category,
+                     laplace=1)
+```
+
+We must say that not using a Bayesian approach (Laplace smoothing = 0) achieves a 0.8
+of accuracy. However, I decided that the difference is not that big. And that the classifier
+can generalize better if it follows a bayesin approach.
